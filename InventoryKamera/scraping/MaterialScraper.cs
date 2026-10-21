@@ -371,7 +371,7 @@ namespace InventoryKamera
 				}
 			}
 
-			// A quantity is accepted only if two or more scales agree.
+			// A quantity is accepted only if two or more OCR readings agree.
 			// Never return the vote count instead of the quantity itself.
 			var mode = SafeExtractMaxCounter(counts);
 			if (mode.HasValue && mode.Value.Value >= 2)
