@@ -388,7 +388,7 @@ namespace InventoryKamera
 			// Do not turn letter M into 111 or strip arbitrary characters,
 			// because those transformations fabricate quantities.
 			string clean = text.Trim().Replace(" ", "");
-			if (!Regex.IsMatch(clean, @"^\\d{1,3}(,\\d{3})*$|^\\d+$"))
+			if (!Regex.IsMatch(clean, @"^\d{1,3}(,\d{3})*$|^\d+$"))
 				return false;
 			clean = clean.Replace(",", "");
 			return int.TryParse(clean, out value) && value > 0;
