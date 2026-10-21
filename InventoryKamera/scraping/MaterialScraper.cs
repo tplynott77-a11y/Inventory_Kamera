@@ -319,9 +319,9 @@ namespace InventoryKamera
 			Dictionary<int, int> counts = new Dictionary<int, int>();
 			var region = new RECT(
 				Left: rectangle.X,
-				Top: (int)(rectangle.Y + (0.8 * rectangle.Height)),
+				Top: (int)(rectangle.Y + (0.74 * rectangle.Height)),
 				Right: rectangle.Right,
-				Bottom: rectangle.Bottom + 10);
+				Bottom: rectangle.Bottom + 25);
 
 			var rRange = new Accord.IntRange(0, 150);
 			var bRange = new Accord.IntRange(0, 150);
@@ -346,20 +346,27 @@ namespace InventoryKamera
 						GenshinProcesor.SetInvert(ref n);
 						using (Bitmap thresholded = new Threshold(50).Apply(n))
 						{
-							string original = GenshinProcesor.AnalyzeText(thresholded).Trim();
-							int value;
-							if (TryParseMaterialQuantity(original, out value))
-							{
-								counts[value] = counts.ContainsKey(value) ? counts[value] + 1 : 1;
-								Logger.Debug("Material OCR scale {0}: '{1}' -> {2}", scale, original, value);
-							}
-							else
-							{
-								Logger.Debug("Material OCR scale {0}: rejected '{1}'", scale, original);
-							}
+							string original = GenshinProcesor.AnalyzeText(
+								thresholded, Tesseract.PageSegMode.SingleWord, numbersOnly: true).Trim();
+							RecordMaterialQuantityVote(counts, original, scale, "filtered");
 						}
 						n.Dispose();
 						copy.Dispose();
+
+						// Second, independent OCR view: dark text on a light background.
+						// Ignore the upper border/stars and keep the centre quantity area.
+						var crop = new Rectangle(
+							(int)(rescaled.Width * 0.15),
+							(int)(rescaled.Height * 0.25),
+							(int)(rescaled.Width * 0.70),
+							rescaled.Height - (int)(rescaled.Height * 0.25));
+						using (Bitmap quantityOnly = rescaled.Clone(crop, rescaled.PixelFormat))
+						using (Bitmap grayscale = GenshinProcesor.ConvertToGrayscale(quantityOnly))
+						{
+							string original = GenshinProcesor.AnalyzeText(
+								grayscale, Tesseract.PageSegMode.SingleWord, numbersOnly: true).Trim();
+							RecordMaterialQuantityVote(counts, original, scale, "unfiltered");
+						}
 					}
 				}
 			}
@@ -378,6 +385,24 @@ namespace InventoryKamera
 			Logger.Warn("Material quantity OCR uncertain: {0}",
 				string.Join(", ", counts.Select(p => p.Key + " (" + p.Value + " reads)")));
 			return 0;
+		}
+
+
+		private static void RecordMaterialQuantityVote(
+			Dictionary<int, int> counts, string original, double scale, string preprocessing)
+		{
+			int value;
+			if (TryParseMaterialQuantity(original, out value))
+			{
+				counts[value] = counts.ContainsKey(value) ? counts[value] + 1 : 1;
+				Logger.Debug("Material OCR {0} at scale {1}: '{2}' -> {3}",
+					preprocessing, scale, original, value);
+			}
+			else
+			{
+				Logger.Debug("Material OCR {0} at scale {1}: rejected '{2}'",
+					preprocessing, scale, original);
+			}
 		}
 
 		private static bool TryParseMaterialQuantity(string text, out int value)
