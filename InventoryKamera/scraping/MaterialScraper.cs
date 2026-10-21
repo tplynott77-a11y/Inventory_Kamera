@@ -314,9 +314,12 @@ namespace InventoryKamera
 
 		public static int ScanMaterialCount(Rectangle rectangle, out Bitmap quantity)
 		{
-			// Run OCR over several scales and require agreement. A single
-			// numeric read is not enough to trust the material quantity.
-			Dictionary<int, int> counts = new Dictionary<int, int>();
+			// Score OCR candidates with grayscale weighted twice as strongly as
+			// colour-filtered OCR (validated against recorded material scans).
+			// Separately count actual readings so one grayscale guess cannot
+			// become sufficient evidence merely because it has double weight.
+			Dictionary<int, int> weightedVotes = new Dictionary<int, int>();
+			Dictionary<int, int> rawReadings = new Dictionary<int, int>();
 			var region = new RECT(
 				Left: rectangle.X,
 				Top: (int)(rectangle.Y + (0.74 * rectangle.Height)),
@@ -348,7 +351,7 @@ namespace InventoryKamera
 						{
 							string original = GenshinProcesor.AnalyzeText(
 								thresholded, Tesseract.PageSegMode.SingleWord, numbersOnly: true).Trim();
-							RecordMaterialQuantityVote(counts, original, scale, "filtered");
+							RecordMaterialQuantityVote(weightedVotes, rawReadings, original, scale, "filtered", 1);
 						}
 						n.Dispose();
 						copy.Dispose();
@@ -365,36 +368,48 @@ namespace InventoryKamera
 						{
 							string original = GenshinProcesor.AnalyzeText(
 								grayscale, Tesseract.PageSegMode.SingleWord, numbersOnly: true).Trim();
-							RecordMaterialQuantityVote(counts, original, scale, "unfiltered");
+							RecordMaterialQuantityVote(weightedVotes, rawReadings, original, scale, "unfiltered", 2);
 						}
 					}
 				}
 			}
 
-			// A quantity is accepted only if two or more OCR readings agree.
-			// Never return the vote count instead of the quantity itself.
-			var mode = SafeExtractMaxCounter(counts);
-			if (mode.HasValue && mode.Value.Value >= 2)
+			// Require at least two real OCR readings of the chosen quantity,
+			// and a unique winner after weighting; otherwise flag uncertainty.
+			var mode = SafeExtractMaxCounter(weightedVotes);
+			if (mode.HasValue)
 			{
-				int competingVotes = counts.Where(p => p.Key != mode.Value.Key)
+				int competingVotes = weightedVotes.Where(p => p.Key != mode.Value.Key)
 					.Select(p => p.Value).DefaultIfEmpty(0).Max();
-				if (mode.Value.Value > competingVotes)
-						return mode.Value.Key;
+				int supportingReads;
+				if (rawReadings.TryGetValue(mode.Value.Key, out supportingReads) &&
+					supportingReads >= 2 && mode.Value.Value > competingVotes)
+				{
+					Logger.Debug("Material OCR decision: {0} ({1} weighted votes, {2} actual reads)",
+						mode.Value.Key, mode.Value.Value, supportingReads);
+					return mode.Value.Key;
+				}
 			}
 
-			Logger.Warn("Material quantity OCR uncertain: {0}",
-				string.Join(", ", counts.Select(p => p.Key + " (" + p.Value + " reads)")));
+			Logger.Warn("Material quantity OCR uncertain, weighted candidates: {0}",
+				string.Join(", ", weightedVotes.Select(p =>
+					p.Key + " (" + p.Value + " weighted, " + rawReadings[p.Key] + " reads)")));
 			return 0;
 		}
 
 
 		private static void RecordMaterialQuantityVote(
-			Dictionary<int, int> counts, string original, double scale, string preprocessing)
+			Dictionary<int, int> weightedVotes,
+			Dictionary<int, int> rawReadings,
+			string original, double scale, string preprocessing, int weight)
 		{
 			int value;
 			if (TryParseMaterialQuantity(original, out value))
 			{
-				counts[value] = counts.ContainsKey(value) ? counts[value] + 1 : 1;
+				weightedVotes[value] = weightedVotes.ContainsKey(value)
+					? weightedVotes[value] + weight : weight;
+				rawReadings[value] = rawReadings.ContainsKey(value)
+					? rawReadings[value] + 1 : 1;
 				Logger.Debug("Material OCR {0} at scale {1}: '{2}' -> {3}",
 					preprocessing, scale, original, value);
 			}
