@@ -314,78 +314,84 @@ namespace InventoryKamera
 
 		public static int ScanMaterialCount(Rectangle rectangle, out Bitmap quantity)
 		{
+			// Run OCR over several scales and require agreement. A single
+			// numeric read is not enough to trust the material quantity.
 			Dictionary<int, int> counts = new Dictionary<int, int>();
 			var region = new RECT(
 				Left: rectangle.X,
-				Top: (int)(rectangle.Y + (0.8 * rectangle.Height)), // Only get the bottom of inventory item
+				Top: (int)(rectangle.Y + (0.8 * rectangle.Height)),
 				Right: rectangle.Right,
 				Bottom: rectangle.Bottom + 10);
 
-            var rRange = new Accord.IntRange(0, 150);
-            var bRange = new Accord.IntRange(0, 150);
-            var gRange = new Accord.IntRange(0, 150);
+			var rRange = new Accord.IntRange(0, 150);
+			var bRange = new Accord.IntRange(0, 150);
+			var gRange = new Accord.IntRange(0, 150);
 
-            using (Bitmap bm = Navigation.CaptureRegion(region))
+			using (Bitmap bm = Navigation.CaptureRegion(region))
 			{
 				quantity = (Bitmap)bm.Clone();
+				for (var scale = 1.0; scale <= 3.0; scale += 0.5)
+				{
+					using (Bitmap rescaled = GenshinProcesor.ResizeImage(
+						bm, (int)(bm.Width * scale), (int)(bm.Height * scale)))
+					{
+						Bitmap copy = (Bitmap)rescaled.Clone();
+						GenshinProcesor.FilterColors(ref copy, rRange, bRange, gRange);
 
-				for (var scale = 1.0; scale <= 3; scale += 0.5)
-                {
-					using (Bitmap rescaled = GenshinProcesor.ResizeImage(bm, (int)(bm.Width * scale), (int)(bm.Height * scale)))
-                    {
-                        Bitmap copy = (Bitmap)rescaled.Clone();
-                        GenshinProcesor.FilterColors(ref copy, rRange, bRange, gRange);
+						for (int i = 0; i < copy.Width; i++)
+							for (int j = 0; j < copy.Height * 0.25; j++)
+								copy.SetPixel(i, j, Color.White);
 
-                        for (int i = 0; i < copy.Width; i++)
-                            for (int j = 0; j < copy.Height * 0.25; j++)
-                                copy.SetPixel(i, j, Color.White);
-
-                        Bitmap n = GenshinProcesor.ConvertToGrayscale(copy);
-                        
+						Bitmap n = GenshinProcesor.ConvertToGrayscale(copy);
 						GenshinProcesor.SetInvert(ref n);
-                        n = new Threshold(50).Apply(n);
-
-                        string original = GenshinProcesor.AnalyzeText(n).Trim();
-
+						using (Bitmap thresholded = new Threshold(50).Apply(n))
+						{
+							string original = GenshinProcesor.AnalyzeText(thresholded).Trim();
+							int value;
+							if (TryParseMaterialQuantity(original, out value))
+							{
+								counts[value] = counts.ContainsKey(value) ? counts[value] + 1 : 1;
+								Logger.Debug("Material OCR scale {0}: '{1}' -> {2}", scale, original, value);
+							}
+							else
+							{
+								Logger.Debug("Material OCR scale {0}: rejected '{1}'", scale, original);
+							}
+						}
 						n.Dispose();
 						copy.Dispose();
-
-                        if (int.TryParse(original, out int val)) return val;
-
-                        // Might be worth it to train some more numbers
-                        var cleaned = original;
-
-                        cleaned = cleaned.Replace("M", "111");
-
-                        cleaned = Regex.Replace(cleaned, @"[^0-9]", string.Empty);
-
-                        int.TryParse(cleaned, out val);
-
-                        Logger.Debug($"Scanned: {original} -> Regex: {cleaned} -> Parsed: {val}");
-
-                        if (counts.TryGetValue(val, out var counter))
-                        {
-                            if (counter >= 3 && val != 0) return val;
-                            counts[val]++;
-                        }
-                        else
-                        {
-                            counts.Add(val, 1);
-                        }
-                    }
-                }
+					}
+				}
 			}
-			
-			var nullableMode = SafeExtractMaxCounter(counts);
-			if (nullableMode == null)
-				return 0;
 
-			var mode = nullableMode.Value;
-			if (mode.Key == 0 && counts.Count >= 5) 
-				return 0;
-			
-			counts.Remove(mode.Key);
-			return SafeExtractMaxCounter(counts)?.Value ?? 0;
+			// A quantity is accepted only if two or more scales agree.
+			// Never return the vote count instead of the quantity itself.
+			var mode = SafeExtractMaxCounter(counts);
+			if (mode.HasValue && mode.Value.Value >= 2)
+			{
+				int competingVotes = counts.Where(p => p.Key != mode.Value.Key)
+					.Select(p => p.Value).DefaultIfEmpty(0).Max();
+				if (mode.Value.Value > competingVotes)
+						return mode.Value.Key;
+			}
+
+			Logger.Warn("Material quantity OCR uncertain: {0}",
+				string.Join(", ", counts.Select(p => p.Key + " (" + p.Value + " reads)")));
+			return 0;
+		}
+
+		private static bool TryParseMaterialQuantity(string text, out int value)
+		{
+			value = 0;
+			if (string.IsNullOrWhiteSpace(text)) return false;
+			// Accept a plain positive integer, optionally with a thousands separator.
+			// Do not turn letter M into 111 or strip arbitrary characters,
+			// because those transformations fabricate quantities.
+			string clean = text.Trim().Replace(" ", "");
+			if (!Regex.IsMatch(clean, @"^\\d{1,3}(,\\d{3})*$|^\\d+$"))
+				return false;
+			clean = clean.Replace(",", "");
+			return int.TryParse(clean, out value) && value > 0;
 		}
 
 		private static KeyValuePair<int, int>? SafeExtractMaxCounter(Dictionary<int, int> counts)
