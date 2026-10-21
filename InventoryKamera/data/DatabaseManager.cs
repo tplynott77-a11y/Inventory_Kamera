@@ -132,7 +132,47 @@ namespace InventoryKamera
 
         public Dictionary<string, JObject> LoadCharacters()
         {
-            return GetList(ListType.Characters).ToObject<Dictionary<string, JObject>>();
+            var characters = GetList(ListType.Characters).ToObject<Dictionary<string, JObject>>();
+            // Fix previously generated lookup tables without forcing a download.
+            if (characters.TryGetValue("traveler", out var traveler) && EnsureCryoTravelerSupport(traveler))
+                Logger.Info("Added Cryo Traveler to the in-memory character lookup.");
+            return characters;
+        }
+
+        private static bool EnsureCryoTravelerSupport(JObject traveler)
+        {
+            if (traveler == null) return false;
+
+            var elements = traveler["Element"] as JArray;
+            if (elements == null)
+            {
+                Logger.Warn("Traveler lookup has no Element array.");
+                return false;
+            }
+
+            bool modified = false;
+            if (!elements.Any(item => string.Equals(item.ToString(), "cryo", StringComparison.OrdinalIgnoreCase)))
+            {
+                elements.Add("cryo");
+                modified = true;
+            }
+
+            var order = traveler["ConstellationOrder"] as JObject;
+            if (order == null)
+            {
+                order = new JObject();
+                traveler["ConstellationOrder"] = order;
+                modified = true;
+            }
+
+            // Cryo Traveler C3: Burst +3. C5: Skill +3.
+            if (order["cryo"] == null)
+            {
+                order["cryo"] = new JArray("burst", "skill");
+                modified = true;
+            }
+
+            return modified;
         }
 
         public Dictionary<string, string> LoadWeapons()
@@ -408,6 +448,7 @@ namespace InventoryKamera
                                 var playerElements = new Dictionary<string, string>
                                 {
                                     { "Electric", "electro" },
+                                    { "Ice", "cryo" },
                                     { "Fire", "pyro" },
                                     { "Grass", "dendro" },
                                     { "Rock", "geo"},
@@ -547,6 +588,14 @@ namespace InventoryKamera
             {
                 Logger.Warn(ex);
                 status = UpdateStatus.Fail;
+            }
+
+            // Previously cached characters are normally skipped by UpdateCharacters.
+            // Persist the repaired Traveler data whenever an update does run.
+            if (newData.TryGetValue("traveler", out var cachedTraveler) &&
+                EnsureCryoTravelerSupport(cachedTraveler) && status != UpdateStatus.Fail)
+            {
+                status = UpdateStatus.Success;
             }
 
             // Validate the new data before saving
