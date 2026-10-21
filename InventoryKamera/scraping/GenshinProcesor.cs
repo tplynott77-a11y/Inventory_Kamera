@@ -195,9 +195,12 @@ namespace InventoryKamera
 			TesseractEngine e;
 			while (!engines.TryTake(out e)) { Thread.Sleep(10); }
 
-			if (numbersOnly) e.SetVariable("tessedit_char_whitelist", "0123456789");
-			using (var page = e.Process(bitmap, pageMode))
+			try
 			{
+				if (numbersOnly)
+					e.SetVariable("tessedit_char_whitelist", "0123456789");
+
+				using (var page = e.Process(bitmap, pageMode))
 				using (var iter = page.GetIterator())
 				{
 					iter.Begin();
@@ -208,7 +211,14 @@ namespace InventoryKamera
 					while (iter.Next(PageIteratorLevel.TextLine));
 				}
 			}
-			engines.Add(e);
+			finally
+			{
+				// Tesseract engines are pooled. Don't leave numeric-only recognition
+				// enabled when the same engine is reused for character/item names.
+				if (numbersOnly)
+					e.SetVariable("tessedit_char_whitelist", "");
+				engines.Add(e);
+			}
 
 			return text;
 		}
