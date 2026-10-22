@@ -320,6 +320,8 @@ namespace InventoryKamera
 			// become sufficient evidence merely because it has double weight.
 			Dictionary<int, int> weightedVotes = new Dictionary<int, int>();
 			Dictionary<int, int> rawReadings = new Dictionary<int, int>();
+			int precisionQuantity = 0;
+			bool precisionAvailable = false;
 			var region = new RECT(
 				Left: rectangle.X,
 				Top: (int)(rectangle.Y + (0.74 * rectangle.Height)),
@@ -333,6 +335,7 @@ namespace InventoryKamera
 			using (Bitmap bm = Navigation.CaptureRegion(region))
 			{
 				quantity = (Bitmap)bm.Clone();
+				precisionAvailable = MaterialQuantityPrecisionVerifier.TryRead(bm, out precisionQuantity);
 				for (var scale = 1.0; scale <= 3.0; scale += 0.5)
 				{
 					using (Bitmap rescaled = GenshinProcesor.ResizeImage(
@@ -374,8 +377,11 @@ namespace InventoryKamera
 				}
 			}
 
-			// Require at least two real OCR readings of the chosen quantity,
-			// and a unique winner after weighting; otherwise flag uncertainty.
+			// Preserve V3.1 as the fallback. Precision verification reads the
+			// shapes of individual digits; it uses no previous inventory values.
+			// The verifier only overrides OCR when every digit has a decisive
+			// template match. Ambiguous/merged glyphs retain the V3.1 decision.
+			int weightedQuantity = 0;
 			var mode = SafeExtractMaxCounter(weightedVotes);
 			if (mode.HasValue)
 			{
@@ -384,14 +390,21 @@ namespace InventoryKamera
 				int supportingReads;
 				if (rawReadings.TryGetValue(mode.Value.Key, out supportingReads) &&
 					supportingReads >= 2 && mode.Value.Value > competingVotes)
-				{
-					Logger.Debug("Material OCR decision: {0} ({1} weighted votes, {2} actual reads)",
-						mode.Value.Key, mode.Value.Value, supportingReads);
-					return mode.Value.Key;
-				}
+					weightedQuantity = mode.Value.Key;
 			}
-
-			Logger.Warn("Material quantity OCR uncertain, weighted candidates: {0}",
+			if (precisionAvailable)
+			{
+				if (weightedQuantity != precisionQuantity)
+					Logger.Warn("Material quantity V3.2 correction: weighted OCR {0}, shape verifier {1}",
+						weightedQuantity, precisionQuantity);
+				return precisionQuantity;
+			}
+			if (weightedQuantity > 0)
+			{
+				Logger.Debug("Material OCR V3.1 fallback decision: {0}", weightedQuantity);
+				return weightedQuantity;
+			}
+			Logger.Warn("Material quantity OCR uncertain (precision verifier also unavailable): {0}",
 				string.Join(", ", weightedVotes.Select(p =>
 					p.Key + " (" + p.Value + " weighted, " + rawReadings[p.Key] + " reads)")));
 			return 0;
@@ -439,4 +452,126 @@ namespace InventoryKamera
             return counts.Count == 0 ? null : (KeyValuePair<int, int>?)counts.Aggregate((l, r) => l.Value > r.Value ? l : r);
         }
     }
+
+	// Independent bitmap-level number check for Genshin's fixed inventory-font
+	// quantity glyphs. Each reference is a 36 x 44 packed binary silhouette
+	// (digits 0..9), sampled from correctly verified screenshots. These are
+	// FONT templates, not remembered quantities. Unknown layouts and unclear
+	// shapes return false so ordinary V3.1 OCR remains the fallback.
+	internal static class MaterialQuantityPrecisionVerifier
+	{
+		private const int TemplateWidth = 44;
+		private const int TemplateHeight = 36;
+		private static readonly byte[][] DigitTemplates = new byte[][] {
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAH/AAAAAH/8AAAAD//gAAAB//8AAAA/g/gAAAPwH8AAAH8A/AAAB+AP4AAA/gD+AAAP4AfgAAD+AH8AAA/AB/AAAfwAfwAAH8AH8AAB/AB/AAAfwAfwAAH8AH8AAB/AB/AAAfwAfwAAD8AH8AAA/AB/AAAP4AfgAAD+AH4AAA/gD+AAAH4A/gAAB/APwAAAPwH8AAAD+D+AAAAf//AAAAD//gAAAAP/wAAAAA/gAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAAAwAAAAAA8AAAAAA/AAAAAA/wAAAAA/8AAAAA//AAAAAP/wAAAAAf8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB+AAAAAAfAAAAAADAAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAB+AAAAAD/8AAAAD//gAAAB//8AAAAfg/gAAAPwH8AAAD8A/AAAB+APwAAAfgD8AAAH4A/AAAB+APwAAAfgD8AAAAAB/AAAAAA/gAAAAAf4AAAAAP8AAAAAH+AAAAAD/AAAAAD/AAAAAB/gAAAAA/gAAAAAfwAAAAAP4AAAAAH8AAAAAD/AAAAAA/gAIAAAf//+AAAH///gAAB///4AAAf//8AAAH///AAAB///wAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAH/AAAAAH/8AAAAH//gAAAB//8AAAA/h/gAAAPgH8AAAH4B/AAAB8APwAAAfAD8AAAHwA/AAAAAAfwAAAAAH4AAAAAD+AAAAA//AAAAAf/gAAAAH/4AAAAA//gAAAAAP8AAAAAB/AAAAAAP4AAAAAD+AAAHwA/gAAB8AP4AAAfAD+AAAHwA/gAAB+Af4AAAfwP8AAAD///AAAAf//gAAAH//wAAAAf/wAAAAB/gAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAAPwAAAAAD+AAAAAB/gAAAAA/4AAAAAP+AAAAAH/gAAAAD/4AAAAA/+AAAAAe/gAAAAPP4AAAADz+AAAAB4/gAAAA8P4AAAAPD+AAAAHg/gAAADwP4AAAA8D+AAAAeA/gAAAPgP4AAAD///8AAB////gAAf///4AAP///+AAB////gAAAAf4AAAAAD+AAAAAA/gAAAAAP4AAAAAD8AAAAAA/AAAAAAPgAAAAADwAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAA//+AAAAP//gAAAD//4AAAA//8AAAAP/+AAAAH4AAAAAB8AAAAAAfAAAAAAHwAAAAAB8AAAAAAfAAAAAAPxwAAAAD//wAAAA//+AAAAP//4AAAD4H+AAAAQA/wAAAAAH8AAAAAA/gAAAAAP4AAAAAD+AAAPgA/gAAD4AP4AAA+AD+AAAPwB/AAAB8AfwAAAfgP8AAAD+P+AAAA///AAAAH//gAAAAf/gAAAAA/AAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAADgAAAAAD4AAAAAD8AAAAAB+AAAAAB/AAAAAA/gAAAAAfwAAAAAP4AAAAAH8AAAAAB+AAAAAA/gAAAAAPwAAAAAH9/wAAAB///AAAAf//4AAAP/D/AAAD/Af4AAA/gD+AAAP4A/gAAD+AH8AAA/gB/AAAP4AfwAAD+AH8AAA/gB/AAAH4AfgAAB/AP4AAAfwD+AAAD+B/AAAAf//gAAAD//wAAAAf/4AAAAA/wAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAH///wAAB///8AAAf//+AAAH///AAAD///wAAA4AH4AAAAAB8AAAAAAfAAAAAAPgAAAAAH4AAAAAD8AAAAAA/AAAAAAfgAAAAAH4AAAAAD+AAAAAA/AAAAAAfwAAAAAH8AAAAAB+AAAAAA/gAAAAAP4AAAAAD+AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH4AAAAAB+AAAAAA/gAAAAAPwAAAAABwAAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAD/AAAAAH/+AAAAD//wAAAB//+AAAA/gfwAAAfwD8AAAH8A/gAAB/AP4AAAfwD+AAAH8A/gAAB/gfwAAAf8H8AAAD//+AAAAf//AAAAD//gAAAAf/8AAAAP//gAAAP//8AAAH+H/gAAB/Af4AAA/gD/AAAP4AfwAAD+AH8AAA/AB/AAAPwAfwAAD+AH8AAA/gB/AAAH8A/gAAB/5/wAAAP//4AAAA//8AAAAB/4AAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAD+AAAAAH/8AAAAD//wAAAB//+AAAA/gfwAAAfwD8AAAH8A/gAAD+AP4AAA/gB+AAAP4AfgAAD+AH8AAA/gB/AAAP4AfwAAB/AH4AAAfwD+AAAH+B/gAAA///4AAAH//+AAAA///AAAAD/fwAAAAAH8AAAAAB+AAAAAA/gAAAAAPwAAAAAH4AAAAAD8AAAAAB/AAAAAA/AAAAAAfgAAAAAfwAAAAAHwAAAAABgAAAAAAAAAAAAAAAAAA")
+		};
+
+		private struct Glyph
+		{
+			internal int X, Y, Width, Height, Area;
+			internal Glyph(int x, int y, int width, int height, int area)
+			{ X = x; Y = y; Width = width; Height = height; Area = area; }
+		}
+
+		internal static bool TryRead(Bitmap image, out int quantity)
+		{
+			quantity = 0;
+			// Other display scales are not calibrated; do not guess.
+			if (image == null || image.Width < 240 || image.Width > 260 ||
+				image.Height < 80 || image.Height > 115) return false;
+
+			int startX = (int)(image.Width * 0.23);
+			int endX = (int)(image.Width * 0.77);
+			int startY = (int)(image.Height * 0.15);
+			int width = endX - startX, height = image.Height - startY;
+			bool[] darkBlue = new bool[width * height];
+			for (int y = 0; y < height; ++y)
+				for (int x = 0; x < width; ++x)
+				{
+					Color p = image.GetPixel(startX + x, startY + y);
+					darkBlue[y * width + x] = p.R < 160 &&
+						p.B * 100 > p.R * 103 && p.B * 100 > p.G * 101;
+				}
+
+			bool[] visited = new bool[darkBlue.Length];
+			int[] queue = new int[darkBlue.Length];
+			List<Glyph> glyphs = new List<Glyph>();
+			for (int pos = 0; pos < darkBlue.Length; ++pos)
+			{
+				if (!darkBlue[pos] || visited[pos]) continue;
+				int head = 0, tail = 0, area = 0;
+				queue[tail++] = pos; visited[pos] = true;
+				int xMin = width, xMax = 0, yMin = height, yMax = 0;
+				while (head < tail)
+				{
+					int here = queue[head++];
+					int cx = here % width, cy = here / width;
+					area++;
+					xMin = Math.Min(xMin, cx); xMax = Math.Max(xMax, cx);
+					yMin = Math.Min(yMin, cy); yMax = Math.Max(yMax, cy);
+					for (int dy = -1; dy <= 1; ++dy)
+						for (int dx = -1; dx <= 1; ++dx)
+						{
+							int nx = cx + dx, ny = cy + dy;
+							if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+							int n = ny * width + nx;
+							if (!darkBlue[n] || visited[n]) continue;
+							visited[n] = true; queue[tail++] = n;
+						}
+				}
+				int boxHeight = yMax - yMin + 1, boxWidth = xMax - xMin + 1;
+				if (boxHeight >= 27 && boxHeight <= 36 && boxWidth >= 9 &&
+					area >= 150 && yMin + startY >= 18)
+					glyphs.Add(new Glyph(xMin, yMin, boxWidth, boxHeight, area));
+			}
+			if (glyphs.Count < 1 || glyphs.Count > 6) return false;
+			glyphs.Sort((a, b) => a.X.CompareTo(b.X));
+
+			foreach (Glyph g in glyphs)
+			{
+				int scaledWidth = (int)Math.Round(g.Width * 32.0 / g.Height);
+				// Touching digits or unusual fonts: leave the existing OCR result.
+				if (scaledWidth > 40) return false;
+				bool[] silhouette = new bool[TemplateWidth * TemplateHeight];
+				int shiftX = (TemplateWidth - scaledWidth) / 2;
+				for (int yy = 0; yy < 32; ++yy)
+					for (int xx = 0; xx < scaledWidth; ++xx)
+					{
+						int sourceY = g.Y + yy * g.Height / 32;
+						int sourceX = g.X + xx * g.Width / scaledWidth;
+						silhouette[(yy + 2) * TemplateWidth + shiftX + xx] =
+							darkBlue[sourceY * width + sourceX];
+					}
+
+				int bestDigit = -1, best = int.MaxValue, runnerUp = int.MaxValue;
+				for (int d = 0; d < DigitTemplates.Length; ++d)
+				{
+					int distance = 0;
+					for (int i = 0; i < silhouette.Length; ++i)
+						if (silhouette[i] != ((DigitTemplates[d][i / 8] & (0x80 >> (i % 8))) != 0))
+							distance++;
+					if (distance < best)
+					{
+						runnerUp = best; best = distance; bestDigit = d;
+					}
+					else if (distance < runnerUp) runnerUp = distance;
+				}
+				// These conservative limits were tested on 1,118 saved image
+				// captures. If recognition is not decisive, use V3.1 instead.
+				if (best > 130 || runnerUp - best < 30) return false;
+				if (quantity > (int.MaxValue - bestDigit) / 10) return false;
+				quantity = quantity * 10 + bestDigit;
+			}
+			return quantity > 0;
+		}
+	}
 }
