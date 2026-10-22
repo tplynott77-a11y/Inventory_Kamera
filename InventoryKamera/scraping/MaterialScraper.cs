@@ -37,6 +37,8 @@ namespace InventoryKamera
 	internal class MaterialScraper : InventoryScraper
 	{
 		private static NLog.Logger Logger = NLog.LogManager.GetCurrentClassLogger();
+		// A verifier failure must not prevent the established V3.1 OCR pipeline.
+		private static bool precisionVerifierDisabled = false;
 
 
 		public MaterialScraper()
@@ -335,7 +337,18 @@ namespace InventoryKamera
 			using (Bitmap bm = Navigation.CaptureRegion(region))
 			{
 				quantity = (Bitmap)bm.Clone();
-				precisionAvailable = MaterialQuantityPrecisionVerifier.TryRead(bm, out precisionQuantity);
+				if (!precisionVerifierDisabled)
+				{
+					try
+					{
+						precisionAvailable = MaterialQuantityPrecisionVerifier.TryRead(bm, out precisionQuantity);
+					}
+					catch (Exception ex)
+					{
+						precisionVerifierDisabled = true;
+						Logger.Error(ex, "Material V3.2 precision verifier failed; using V3.1 OCR for this scan.");
+					}
+				}
 				for (var scale = 1.0; scale <= 3.0; scale += 0.5)
 				{
 					using (Bitmap rescaled = GenshinProcesor.ResizeImage(
@@ -464,7 +477,7 @@ namespace InventoryKamera
 		private const int TemplateHeight = 36;
 		private static readonly byte[][] DigitTemplates = new byte[][] {
 			Convert.FromBase64String("AAAAAAAAAAAAAAAAAH/AAAAAH/8AAAAD//gAAAB//8AAAA/g/gAAAPwH8AAAH8A/AAAB+AP4AAA/gD+AAAP4AfgAAD+AH8AAA/AB/AAAfwAfwAAH8AH8AAB/AB/AAAfwAfwAAH8AH8AAB/AB/AAAfwAfwAAD8AH8AAA/AB/AAAP4AfgAAD+AH4AAA/gD+AAAH4A/gAAB/APwAAAPwH8AAAD+D+AAAAf//AAAAD//gAAAAP/wAAAAA/gAAAAAAAAAAAAAAAAA"),
-			Convert.FromBase64String("AAAAAAAAAAAAAAAAAAAwAAAAAA8AAAAAA/AAAAAA/wAAAAA/8AAAAA//AAAAAP/wAAAAAf8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB+AAAAAAfAAAAAADAAAAAAAAAAAAAAAAAA"),
+			Convert.FromBase64String("AAAAAAAAAAAAAAAAAAAwAAAAAA8AAAAAA/AAAAAA/wAAAAA/8AAAAA//AAAAAP/wAAAAAf8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB/AAAAAAfwAAAAAH8AAAAAB+AAAAAAfAAAAAADAAAAAAAAAAAAAAAAAA"),
 			Convert.FromBase64String("AAAAAAAAAAAAAAAAAB+AAAAAD/8AAAAD//gAAAB//8AAAAfg/gAAAPwH8AAAD8A/AAAB+APwAAAfgD8AAAH4A/AAAB+APwAAAfgD8AAAAAB/AAAAAA/gAAAAAf4AAAAAP8AAAAAH+AAAAAD/AAAAAD/AAAAAB/gAAAAA/gAAAAAfwAAAAAP4AAAAAH8AAAAAD/AAAAAA/gAIAAAf//+AAAH///gAAB///4AAAf//8AAAH///AAAB///wAAAAAAAAAAAAAAAA"),
 			Convert.FromBase64String("AAAAAAAAAAAAAAAAAH/AAAAAH/8AAAAH//gAAAB//8AAAA/h/gAAAPgH8AAAH4B/AAAB8APwAAAfAD8AAAHwA/AAAAAAfwAAAAAH4AAAAAD+AAAAA//AAAAAf/gAAAAH/4AAAAA//gAAAAAP8AAAAAB/AAAAAAP4AAAAAD+AAAHwA/gAAB8AP4AAAfAD+AAAHwA/gAAB+Af4AAAfwP8AAAD///AAAAf//gAAAH//wAAAAf/wAAAAB/gAAAAAAAAAAAAAAAAA"),
 			Convert.FromBase64String("AAAAAAAAAAAAAAAAAAPwAAAAAD+AAAAAB/gAAAAA/4AAAAAP+AAAAAH/gAAAAD/4AAAAA/+AAAAAe/gAAAAPP4AAAADz+AAAAB4/gAAAA8P4AAAAPD+AAAAHg/gAAADwP4AAAA8D+AAAAeA/gAAAPgP4AAAD///8AAB////gAAf///4AAP///+AAB////gAAAAf4AAAAAD+AAAAAA/gAAAAAP4AAAAAD8AAAAAA/AAAAAAPgAAAAADwAAAAAAAAAAAAAAAAA"),
